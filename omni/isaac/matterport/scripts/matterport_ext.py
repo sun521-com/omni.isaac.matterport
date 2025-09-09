@@ -229,7 +229,16 @@ class MatterPortExtension(omni.ext.IExt):
             if os.path.isfile(candidate):
                 self._input_file = candidate
 
-        # prevent overlapping imports
+        # USD-only fast path (no asyncio, safest to avoid re-entrancy)
+        if self._input_file.lower().endswith(".usd"):
+            try:
+                self._simple_import_usd(self._input_file)
+                carb.log_info(f"[{EXTENSION_NAME}] Simple USD import done: {self._input_file}")
+            except Exception as exc:
+                carb.log_error(f"[{EXTENSION_NAME}] Simple USD import failed: {exc}")
+            return
+
+        # prevent overlapping imports for advanced path
         if self._import_running:
             carb.log_warn("Import already running; ignoring request.")
             return
@@ -244,3 +253,30 @@ class MatterPortExtension(omni.ext.IExt):
         carb.log_warn(
             f"[{EXTENSION_NAME}] _load_matterport_async is deprecated; using frame-driven import instead."
         )
+
+    # ---------------- Simple USD import (no asyncio) ----------------
+    def _simple_import_usd(self, usd_path: str) -> None:
+        """Import a USD by adding a reference under prim_path/Matterport.
+
+        This path avoids any async calls to completely sidestep Kit's
+        task stepper re-entrancy.
+        """
+        from pxr import Usd, Sdf
+
+        ctx = omni.usd.get_context()
+        stage = ctx.get_stage()
+        if stage is None:
+            raise RuntimeError("No active USD stage")
+
+        # Ensure container prim exists
+        prim_path = self._prim_path
+        if not stage.GetPrimAtPath(prim_path):
+            stage.DefinePrim(Sdf.Path(prim_path), "Xform")
+
+        # Create/ensure child prim and add reference
+        child_path = f"{prim_path}/Matterport"
+        if not stage.GetPrimAtPath(child_path):
+            stage.DefinePrim(Sdf.Path(child_path), "Xform")
+        prim = stage.GetPrimAtPath(child_path)
+        prim.GetReferences().ClearReferences()
+        prim.GetReferences().AddReference(usd_path)
