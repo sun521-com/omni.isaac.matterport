@@ -60,7 +60,8 @@ class MatterPortExtension(omni.ext.IExt):
 
         # Dock next to viewport (best-effort)
         async def _dock():
-            await omni.kit.app.get_app().next_update_async()
+            # Yield cooperatively; avoid calling Kit frame stepper here
+            await asyncio.sleep(0)
             target = ui.Workspace.get_window("Viewport")
             if target:
                 w = ui.Workspace.get_window(EXTENSION_NAME)
@@ -146,6 +147,9 @@ class MatterPortExtension(omni.ext.IExt):
             if os.path.isfile(candidate):
                 self._input_file = candidate
 
+        # prevent overlapping imports
+        if hasattr(self, "_import_btn"):
+            self._import_btn.enabled = False
         asyncio.ensure_future(self._load_matterport_async())
 
     async def _load_matterport_async(self):
@@ -153,25 +157,28 @@ class MatterPortExtension(omni.ext.IExt):
         if SimulationContext.instance():
             SimulationContext.clear_instance()
 
-        app = omni.kit.app.get_app()
-        # Let UI settle before heavy work
-        await app.next_update_async()
+        try:
+            # allow UI to process prior frame work without forcing Kit to step here
+            await asyncio.sleep(0)
 
-        sim = SimulationContext(SimulationCfg())
-        await sim.initialize_simulation_context_async()
-        # Yield to allow other Kit tasks to step
-        await app.next_update_async()
+            sim = SimulationContext(SimulationCfg())
+            await sim.initialize_simulation_context_async()
+            await asyncio.sleep(0)
 
-        cfg = MatterportImporterCfg(prim_path=self._prim_path, obj_filepath=self._input_file, groundplane=False)
-        importer = MatterportImporter(cfg)
-        # Interleave with frame steps to avoid long unbroken awaits
-        await app.next_update_async()
-        await importer.load_world_async()
-        await app.next_update_async()
+            cfg = MatterportImporterCfg(prim_path=self._prim_path, obj_filepath=self._input_file, groundplane=False)
+            importer = MatterportImporter(cfg)
 
-        await sim.reset_async()
-        await app.next_update_async()
-        await sim.pause_async()
-        await app.next_update_async()
+            await asyncio.sleep(0)
+            await importer.load_world_async()
+            await asyncio.sleep(0)
 
-        carb.log_info(f"[{EXTENSION_NAME}] Imported scene at {self._prim_path} from {self._input_file}")
+            await sim.reset_async()
+            await asyncio.sleep(0)
+            await sim.pause_async()
+            await asyncio.sleep(0)
+
+            carb.log_info(f"[{EXTENSION_NAME}] Imported scene at {self._prim_path} from {self._input_file}")
+        finally:
+            # always re-enable UI button/state even if an exception bubbles
+            if hasattr(self, "_import_btn"):
+                self._import_btn.enabled = True
