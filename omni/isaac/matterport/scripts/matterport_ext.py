@@ -153,14 +153,25 @@ class MatterPortExtension(omni.ext.IExt):
         if SimulationContext.instance():
             SimulationContext.clear_instance()
 
+        app = omni.kit.app.get_app()
+        # Let UI settle before heavy work
+        await app.next_update_async()
+
         sim = SimulationContext(SimulationCfg())
         await sim.initialize_simulation_context_async()
+        # Yield to allow other Kit tasks to step
+        await app.next_update_async()
 
         cfg = MatterportImporterCfg(prim_path=self._prim_path, obj_filepath=self._input_file, groundplane=False)
         importer = MatterportImporter(cfg)
+        # Interleave with frame steps to avoid long unbroken awaits
+        await app.next_update_async()
         await importer.load_world_async()
+        await app.next_update_async()
 
         await sim.reset_async()
+        await app.next_update_async()
         await sim.pause_async()
+        await app.next_update_async()
 
         carb.log_info(f"[{EXTENSION_NAME}] Imported scene at {self._prim_path} from {self._input_file}")

@@ -130,10 +130,9 @@ class MatterportImporter(TerrainImporter):
         if not os.path.exists(usd_path):
             raise FileNotFoundError(f"USD file not found: {usd_path}")
 
-        # Yield once to the event loop without forcing a Kit frame step.
-        # In some Isaac Sim 5.x builds, calling next_update_async() from
-        # within an already-stepped async task can cause re-entrancy errors.
-        await asyncio.sleep(0)
+        # Cooperatively yield to Kit's frame stepper to avoid blocking
+        # other Kit-managed async tasks while importing.
+        await omni.kit.app.get_app().next_update_async()
 
         # Import as a Terrain (Isaac Lab TerrainImporter API)
         self.import_usd("Matterport", usd_path)
