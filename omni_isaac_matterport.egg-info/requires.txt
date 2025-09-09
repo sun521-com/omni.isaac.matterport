@@ -1,0 +1,4 @@
+trimesh
+PyQt5
+matplotlib>=3.5.0
+pandas
