@@ -16,6 +16,7 @@ from isaaclab.sim import SimulationCfg, SimulationContext
 
 # UI helpers (5.0 GUI component library)
 import omni.ui as ui
+from omni.kit.async_engine import run_coroutine
 from isaacsim.gui.components.ui_utils import (
     btn_builder,
     get_style,
@@ -67,7 +68,88 @@ class MatterPortExtension(omni.ext.IExt):
                 w = ui.Workspace.get_window(EXTENSION_NAME)
                 if w:
                     w.dock_in(target, ui.DockPosition.LEFT, 0.33)
-        asyncio.ensure_future(_dock())
+        run_coroutine(_dock())
+
+        # Import task state (driven by update callback, not awaits)
+        self._import_running = False
+        self._import_state = None
+        self._import_future = None
+        self._sim = None
+        self._importer = None
+
+        # Per-frame driver to avoid re-entrancy: we never await inside this
+        def _on_update(e):
+            if not self._import_running:
+                return
+            try:
+                if self._import_state == "init_sim":
+                    carb.log_info(f"[{EXTENSION_NAME}] init_sim")
+                    if SimulationContext.instance():
+                        SimulationContext.clear_instance()
+                    self._sim = SimulationContext(SimulationCfg())
+                    self._import_future = run_coroutine(self._sim.initialize_simulation_context_async())
+                    self._import_state = "wait_init"
+                elif self._import_state == "wait_init":
+                    if self._import_future and self._import_future.done():
+                        exc = self._import_future.exception()
+                        if exc:
+                            raise exc
+                        self._import_future = None
+                        carb.log_info(f"[{EXTENSION_NAME}] sim initialized")
+                        self._import_state = "create_importer"
+                elif self._import_state == "create_importer":
+                    carb.log_info(f"[{EXTENSION_NAME}] create_importer")
+                    cfg = MatterportImporterCfg(
+                        prim_path=self._prim_path, obj_filepath=self._input_file, groundplane=False
+                    )
+                    self._importer = MatterportImporter(cfg)
+                    self._import_future = run_coroutine(self._importer.load_world_async())
+                    self._import_state = "wait_import"
+                elif self._import_state == "wait_import":
+                    if self._import_future and self._import_future.done():
+                        exc = self._import_future.exception()
+                        if exc:
+                            raise exc
+                        self._import_future = None
+                        carb.log_info(f"[{EXTENSION_NAME}] world loaded")
+                        self._import_state = "reset"
+                elif self._import_state == "reset":
+                    carb.log_info(f"[{EXTENSION_NAME}] reset")
+                    self._import_future = run_coroutine(self._sim.reset_async())
+                    self._import_state = "wait_reset"
+                elif self._import_state == "wait_reset":
+                    if self._import_future and self._import_future.done():
+                        exc = self._import_future.exception()
+                        if exc:
+                            raise exc
+                        self._import_future = None
+                        carb.log_info(f"[{EXTENSION_NAME}] pause")
+                        self._import_state = "pause"
+                elif self._import_state == "pause":
+                    self._import_future = run_coroutine(self._sim.pause_async())
+                    self._import_state = "wait_pause"
+                elif self._import_state == "wait_pause":
+                    if self._import_future and self._import_future.done():
+                        exc = self._import_future.exception()
+                        if exc:
+                            raise exc
+                        self._import_future = None
+                        carb.log_info(
+                            f"[{EXTENSION_NAME}] Imported scene at {self._prim_path} from {self._input_file}"
+                        )
+                        self._import_state = "done"
+                elif self._import_state == "done":
+                    # cleanup and re-enable UI
+                    self._import_running = False
+                    if hasattr(self, "_import_btn"):
+                        self._import_btn.enabled = True
+            except Exception as exc:
+                carb.log_error(f"[{EXTENSION_NAME}] Import failed: {exc}")
+                self._import_running = False
+                if hasattr(self, "_import_btn"):
+                    self._import_btn.enabled = True
+
+        self._update_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_push(_on_update)
 
     def on_shutdown(self):
         if self._window:
@@ -148,37 +230,17 @@ class MatterPortExtension(omni.ext.IExt):
                 self._input_file = candidate
 
         # prevent overlapping imports
+        if self._import_running:
+            carb.log_warn("Import already running; ignoring request.")
+            return
+        self._import_running = True
+        self._import_state = "init_sim"
+        self._import_future = None
         if hasattr(self, "_import_btn"):
             self._import_btn.enabled = False
-        asyncio.ensure_future(self._load_matterport_async())
 
     async def _load_matterport_async(self):
-        # (Re)create SimulationContext if needed
-        if SimulationContext.instance():
-            SimulationContext.clear_instance()
-
-        try:
-            # allow UI to process prior frame work without forcing Kit to step here
-            await asyncio.sleep(0)
-
-            sim = SimulationContext(SimulationCfg())
-            await sim.initialize_simulation_context_async()
-            await asyncio.sleep(0)
-
-            cfg = MatterportImporterCfg(prim_path=self._prim_path, obj_filepath=self._input_file, groundplane=False)
-            importer = MatterportImporter(cfg)
-
-            await asyncio.sleep(0)
-            await importer.load_world_async()
-            await asyncio.sleep(0)
-
-            await sim.reset_async()
-            await asyncio.sleep(0)
-            await sim.pause_async()
-            await asyncio.sleep(0)
-
-            carb.log_info(f"[{EXTENSION_NAME}] Imported scene at {self._prim_path} from {self._input_file}")
-        finally:
-            # always re-enable UI button/state even if an exception bubbles
-            if hasattr(self, "_import_btn"):
-                self._import_btn.enabled = True
+        # Legacy path retained for API stability; now unused.
+        carb.log_warn(
+            f"[{EXTENSION_NAME}] _load_matterport_async is deprecated; using frame-driven import instead."
+        )
