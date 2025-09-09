@@ -15,7 +15,13 @@ import carb
 # -- Isaac Sim 5.0 namespaces (preferred) --
 import isaacsim.core.utils.prims as prim_utils
 import isaacsim.core.utils.stage as stage_utils
-from isaacsim.core.api.simulation_context import SimulationContext
+"""
+Use Isaac Lab's SimulationContext singleton to avoid mixing two different
+implementations (isaacsim.core.api.simulation_context vs isaaclab.sim).
+This ensures the importer sees the same SimulationContext created by the
+extension/UI layer.
+"""
+from isaaclab.sim import SimulationContext
 
 # -- Isaac Lab helpers --
 import isaaclab.sim as sim_utils
@@ -124,11 +130,10 @@ class MatterportImporter(TerrainImporter):
         if not os.path.exists(usd_path):
             raise FileNotFoundError(f"USD file not found: {usd_path}")
 
-        # Kit tick once to ensure stage is responsive
-        try:
-            await omni.kit.app.get_app().next_update_async()
-        except Exception:
-            await asyncio.sleep(0)
+        # Yield once to the event loop without forcing a Kit frame step.
+        # In some Isaac Sim 5.x builds, calling next_update_async() from
+        # within an already-stepped async task can cause re-entrancy errors.
+        await asyncio.sleep(0)
 
         # Import as a Terrain (Isaac Lab TerrainImporter API)
         self.import_usd("Matterport", usd_path)
