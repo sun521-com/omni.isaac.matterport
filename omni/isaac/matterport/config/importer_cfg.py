@@ -8,7 +8,7 @@ from dataclasses import MISSING
 
 from isaacsim.core.utils import extensions
 # Local import: avoid broken legacy path and circulars
-from .matterport_importer import MatterportImporter
+from ..domains.matterport_importer import MatterportImporter
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from typing_extensions import Literal

@@ -24,8 +24,8 @@ from isaacsim.gui.components.ui_utils import (
 )
 
 # Local importer/config
-from .importer_cfg import MatterportImporterCfg
-from .matterport_importer import MatterportImporter
+from ..config.importer_cfg import MatterportImporterCfg
+from ..domains.matterport_importer import MatterportImporter
 
 EXTENSION_NAME = "Matterport Importer"
 

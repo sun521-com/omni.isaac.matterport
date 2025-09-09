@@ -12,9 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import omni
 import torch
-from omni.isaac.matterport.domains.matterport_raycast_camera import (
-    MatterportRayCasterCamera,
-)
+from .matterport_raycast_camera import MatterportRayCasterCamera
 from isaaclab.sensors.camera import CameraData
 from isaaclab.sensors.ray_caster import RayCasterCfg
 from isaaclab.sim import SimulationContext
