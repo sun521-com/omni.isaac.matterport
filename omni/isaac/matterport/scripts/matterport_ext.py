@@ -24,6 +24,7 @@ from isaacsim.gui.components.ui_utils import (
     setup_ui_headers,
     str_builder,
 )
+import omni.kit.notification_manager as nm
 
 # Local importer/config
 from ..config.importer_cfg import MatterportImporterCfg
@@ -222,11 +223,27 @@ class MatterPortExtension(omni.ext.IExt):
                 )
                 self._physics_btn.enabled = True
 
+                # Status label
+                self._status_label = ui.Label("Ready", name="matterport_status", height=0)
+                
+    def _set_status(self, text: str):
+        try:
+            if hasattr(self, "_status_label") and self._status_label:
+                self._status_label.text = text
+            try:
+                nm.post_notification(text, duration=3)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     # ---------------- Import logic ----------------
 
     def _start_import(self):
         if not self._input_file:
             carb.log_warn("No input file selected.")
+            print(f"[{EXTENSION_NAME}] No input file selected.")
+            self._set_status("No input file selected")
             return
 
         # If the user selected a relative extension path, try to resolve against extension dir
@@ -241,8 +258,12 @@ class MatterPortExtension(omni.ext.IExt):
             try:
                 self._simple_import_usd(self._input_file)
                 carb.log_info(f"[{EXTENSION_NAME}] Simple USD import done: {self._input_file}")
+                print(f"[{EXTENSION_NAME}] Simple USD import done: {self._input_file}")
+                self._set_status("USD imported successfully")
             except Exception as exc:
                 carb.log_error(f"[{EXTENSION_NAME}] Simple USD import failed: {exc}")
+                print(f"[{EXTENSION_NAME}] Simple USD import failed: {exc}")
+                self._set_status(f"Import failed: {exc}")
             return
 
         # prevent overlapping imports for advanced path
@@ -287,6 +308,7 @@ class MatterPortExtension(omni.ext.IExt):
         prim = stage.GetPrimAtPath(child_path)
         prim.GetReferences().ClearReferences()
         prim.GetReferences().AddReference(usd_path)
+        self._set_status("Reference added to stage")
 
     # ---------------- Physics application (no asyncio) ----------------
     def _apply_physics_sync(self) -> None:
@@ -300,6 +322,8 @@ class MatterPortExtension(omni.ext.IExt):
             stage = ctx.get_stage()
             if stage is None:
                 carb.log_error(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
+                print(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
+                self._set_status("No active USD stage")
                 return
 
             matterport_prim_path = f"{self._prim_path}/Matterport"
@@ -307,6 +331,8 @@ class MatterPortExtension(omni.ext.IExt):
                 carb.log_warn(
                     f"[{EXTENSION_NAME}] Matterport prim not found at '{matterport_prim_path}'. Import USD first."
                 )
+                print(f"[{EXTENSION_NAME}] Matterport prim not found at '{matterport_prim_path}'. Import USD first.")
+                self._set_status("Matterport prim not found; import first")
                 return
 
             # Apply a simple collider; do not change visibility or add planes here
@@ -314,5 +340,9 @@ class MatterPortExtension(omni.ext.IExt):
             sim_utils.define_collision_properties(matterport_prim_path, collider_cfg)
 
             carb.log_info(f"[{EXTENSION_NAME}] Applied collision to {matterport_prim_path}")
+            print(f"[{EXTENSION_NAME}] Applied collision to {matterport_prim_path}")
+            self._set_status("Collision applied")
         except Exception as exc:
             carb.log_error(f"[{EXTENSION_NAME}] Apply Physics failed: {exc}")
+            print(f"[{EXTENSION_NAME}] Apply Physics failed: {exc}")
+            self._set_status(f"Apply Physics failed: {exc}")
