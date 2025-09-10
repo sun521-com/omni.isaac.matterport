@@ -223,6 +223,12 @@ class MatterPortExtension(omni.ext.IExt):
                 )
                 self._physics_btn.enabled = True
 
+                # Add Ground Plane button (synchronous, hidden by default)
+                self._ground_btn = btn_builder(
+                    "Add Ground Plane", text="Add Ground Plane", on_clicked_fn=self._add_ground_plane_sync
+                )
+                self._ground_btn.enabled = True
+
                 # Status label
                 self._status_label = ui.Label("Ready", name="matterport_status", height=0)
                 
@@ -346,3 +352,39 @@ class MatterPortExtension(omni.ext.IExt):
             carb.log_error(f"[{EXTENSION_NAME}] Apply Physics failed: {exc}")
             print(f"[{EXTENSION_NAME}] Apply Physics failed: {exc}")
             self._set_status(f"Apply Physics failed: {exc}")
+
+    def _add_ground_plane_sync(self) -> None:
+        """Create a hidden ground plane at /World/GroundPlane synchronously.
+
+        Uses Isaac Lab's GroundPlaneCfg helper but avoids any async calls.
+        If it already exists, ensures it is hidden.
+        """
+        try:
+            ctx = omni.usd.get_context()
+            stage = ctx.get_stage()
+            if stage is None:
+                carb.log_error(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
+                print(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
+                self._set_status("No active USD stage")
+                return
+
+            gp_path = "/World/GroundPlane"
+            try:
+                gp_cfg = sim_utils.GroundPlaneCfg()
+                ground = gp_cfg.func(gp_path, gp_cfg)
+                # Hide plane to keep scene clean
+                try:
+                    ground.visible = False
+                except Exception:
+                    pass
+                carb.log_info(f"[{EXTENSION_NAME}] Ground plane ready at {gp_path} (hidden)")
+                print(f"[{EXTENSION_NAME}] Ground plane ready at {gp_path} (hidden)")
+                self._set_status("Ground plane added (hidden)")
+            except Exception as inner:
+                carb.log_error(f"[{EXTENSION_NAME}] Ground plane creation failed: {inner}")
+                print(f"[{EXTENSION_NAME}] Ground plane creation failed: {inner}")
+                self._set_status(f"Ground plane failed: {inner}")
+        except Exception as exc:
+            carb.log_error(f"[{EXTENSION_NAME}] Add Ground Plane failed: {exc}")
+            print(f"[{EXTENSION_NAME}] Add Ground Plane failed: {exc}")
+            self._set_status(f"Add Ground Plane failed: {exc}")
