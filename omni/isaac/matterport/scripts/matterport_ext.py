@@ -13,6 +13,7 @@ import omni.usd
 import isaacsim.core.utils.prims as prim_utils
 import isaacsim.core.utils.stage as stage_utils
 from isaaclab.sim import SimulationCfg, SimulationContext
+import isaaclab.sim as sim_utils
 
 # UI helpers (5.0 GUI component library)
 import omni.ui as ui
@@ -215,6 +216,12 @@ class MatterPortExtension(omni.ext.IExt):
                 self._import_btn = btn_builder("Import", text="Import", on_clicked_fn=self._start_import)
                 self._import_btn.enabled = False
 
+                # Apply Physics button (synchronous, safe)
+                self._physics_btn = btn_builder(
+                    "Apply Physics", text="Apply Physics", on_clicked_fn=self._apply_physics_sync
+                )
+                self._physics_btn.enabled = True
+
     # ---------------- Import logic ----------------
 
     def _start_import(self):
@@ -280,3 +287,32 @@ class MatterPortExtension(omni.ext.IExt):
         prim = stage.GetPrimAtPath(child_path)
         prim.GetReferences().ClearReferences()
         prim.GetReferences().AddReference(usd_path)
+
+    # ---------------- Physics application (no asyncio) ----------------
+    def _apply_physics_sync(self) -> None:
+        """Apply basic collision properties to the imported Matterport prim.
+
+        This runs synchronously to avoid async re-entrancy. It requires that
+        the USD has already been imported under self._prim_path/Matterport.
+        """
+        try:
+            ctx = omni.usd.get_context()
+            stage = ctx.get_stage()
+            if stage is None:
+                carb.log_error(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
+                return
+
+            matterport_prim_path = f"{self._prim_path}/Matterport"
+            if not stage.GetPrimAtPath(matterport_prim_path):
+                carb.log_warn(
+                    f"[{EXTENSION_NAME}] Matterport prim not found at '{matterport_prim_path}'. Import USD first."
+                )
+                return
+
+            # Apply a simple collider; do not change visibility or add planes here
+            collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+            sim_utils.define_collision_properties(matterport_prim_path, collider_cfg)
+
+            carb.log_info(f"[{EXTENSION_NAME}] Applied collision to {matterport_prim_path}")
+        except Exception as exc:
+            carb.log_error(f"[{EXTENSION_NAME}] Apply Physics failed: {exc}")
