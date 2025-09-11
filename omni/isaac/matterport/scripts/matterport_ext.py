@@ -369,7 +369,7 @@ class MatterPortExtension(omni.ext.IExt):
                 self._set_status("No active USD stage")
                 return
 
-            from pxr import UsdGeom, Sdf, Gf
+            from pxr import UsdGeom, Sdf, Gf, Usd
 
             gp_path = "/World/GroundPlane"
             plane_path = f"{gp_path}/Plane"
@@ -382,10 +382,18 @@ class MatterPortExtension(omni.ext.IExt):
             created = False
             if not stage.GetPrimAtPath(Sdf.Path(plane_path)):
                 cube = UsdGeom.Cube.Define(stage, Sdf.Path(plane_path))
-                xform = UsdGeom.XformCommonAPI(cube)
+                # Use XformCommonAPI on the prim and set xform with correct types
+                xform = UsdGeom.XformCommonAPI(cube.GetPrim())
                 # Scale: wide in X/Y, thin in Z; lift so top sits at z=0
-                xform.SetScale(Gf.Vec3f(1000.0, 1000.0, 0.1))
-                xform.SetTranslate(Gf.Vec3f(0.0, 0.0, -0.05))
+                try:
+                    xform.SetScale(Gf.Vec3f(1000.0, 1000.0, 0.1), Usd.TimeCode.Default())
+                except Exception as tf1:
+                    carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetScale note: {tf1}")
+                try:
+                    # SetTranslate expects GfVec3d in some builds
+                    xform.SetTranslate(Gf.Vec3d(0.0, 0.0, -0.05), Usd.TimeCode.Default())
+                except Exception as tf2:
+                    carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetTranslate note: {tf2}")
                 created = True
             else:
                 cube = UsdGeom.Cube(stage.GetPrimAtPath(Sdf.Path(plane_path)))
