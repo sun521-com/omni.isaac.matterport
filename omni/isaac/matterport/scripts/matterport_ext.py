@@ -356,8 +356,9 @@ class MatterPortExtension(omni.ext.IExt):
     def _add_ground_plane_sync(self) -> None:
         """Create a hidden ground plane at /World/GroundPlane synchronously.
 
-        Uses Isaac Lab's GroundPlaneCfg helper but avoids any async calls.
-        If it already exists, ensures it is hidden.
+        To avoid dependencies on SimulationContext and async helpers, we
+        define a large thin cube as the plane, make it invisible, and enable
+        collision on it. This works in a single frame and avoids re-entrancy.
         """
         try:
             ctx = omni.usd.get_context()
@@ -368,22 +369,46 @@ class MatterPortExtension(omni.ext.IExt):
                 self._set_status("No active USD stage")
                 return
 
+            from pxr import UsdGeom, Sdf, Gf
+
             gp_path = "/World/GroundPlane"
+            plane_path = f"{gp_path}/Plane"
+
+            # Ensure container Xform exists
+            if not stage.GetPrimAtPath(Sdf.Path(gp_path)):
+                UsdGeom.Xform.Define(stage, Sdf.Path(gp_path))
+
+            # Create a large, thin cube as the ground plane (Z-up by default)
+            created = False
+            if not stage.GetPrimAtPath(Sdf.Path(plane_path)):
+                cube = UsdGeom.Cube.Define(stage, Sdf.Path(plane_path))
+                xform = UsdGeom.XformCommonAPI(cube)
+                # Scale: wide in X/Y, thin in Z; lift so top sits at z=0
+                xform.SetScale(Gf.Vec3f(1000.0, 1000.0, 0.1))
+                xform.SetTranslate(Gf.Vec3f(0.0, 0.0, -0.05))
+                created = True
+            else:
+                cube = UsdGeom.Cube(stage.GetPrimAtPath(Sdf.Path(plane_path)))
+
+            # Make it invisible to keep the scene clean
             try:
-                gp_cfg = sim_utils.GroundPlaneCfg()
-                ground = gp_cfg.func(gp_path, gp_cfg)
-                # Hide plane to keep scene clean
-                try:
-                    ground.visible = False
-                except Exception:
-                    pass
-                carb.log_info(f"[{EXTENSION_NAME}] Ground plane ready at {gp_path} (hidden)")
-                print(f"[{EXTENSION_NAME}] Ground plane ready at {gp_path} (hidden)")
-                self._set_status("Ground plane added (hidden)")
-            except Exception as inner:
-                carb.log_error(f"[{EXTENSION_NAME}] Ground plane creation failed: {inner}")
-                print(f"[{EXTENSION_NAME}] Ground plane creation failed: {inner}")
-                self._set_status(f"Ground plane failed: {inner}")
+                UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
+            except Exception:
+                pass
+
+            # Apply collision so it can act as a floor
+            try:
+                collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+                sim_utils.define_collision_properties(plane_path, collider_cfg)
+            except Exception as coll_exc:
+                carb.log_warn(f"[{EXTENSION_NAME}] Ground plane collision note: {coll_exc}")
+
+            msg = (
+                f"Ground plane {'created' if created else 'ready'} at {plane_path} (hidden/collidable)"
+            )
+            carb.log_info(f"[{EXTENSION_NAME}] {msg}")
+            print(f"[{EXTENSION_NAME}] {msg}")
+            self._set_status("Ground plane added (hidden)")
         except Exception as exc:
             carb.log_error(f"[{EXTENSION_NAME}] Add Ground Plane failed: {exc}")
             print(f"[{EXTENSION_NAME}] Add Ground Plane failed: {exc}")
