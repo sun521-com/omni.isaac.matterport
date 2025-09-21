@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+from typing import Optional
 
 import carb
 import omni
@@ -31,6 +32,168 @@ from ..config.importer_cfg import MatterportImporterCfg
 from ..domains.matterport_importer import MatterportImporter
 
 EXTENSION_NAME = "Matterport Importer"
+MATTERPORT_CHILD_PRIM_NAME = "Matterport"
+
+
+def _get_stage():
+    ctx = omni.usd.get_context()
+    stage = ctx.get_stage()
+    if stage is None:
+        raise RuntimeError("No active USD stage")
+    return stage
+
+
+def _ensure_container_prim(stage, prim_path: str):
+    from pxr import Sdf
+
+    if not stage.GetPrimAtPath(prim_path):
+        stage.DefinePrim(Sdf.Path(prim_path), "Xform")
+    child_path = f"{prim_path}/{MATTERPORT_CHILD_PRIM_NAME}"
+    if not stage.GetPrimAtPath(child_path):
+        stage.DefinePrim(Sdf.Path(child_path), "Xform")
+    return child_path
+
+
+def import_matterport_usd_reference(prim_path: str, usd_path: str) -> str:
+    """Import a USD file by referencing it under the given prim path."""
+
+    from pxr import Sdf
+
+    stage = _get_stage()
+    child_path = _ensure_container_prim(stage, prim_path)
+    prim = stage.GetPrimAtPath(child_path)
+    prim.GetReferences().ClearReferences()
+    prim.GetReferences().AddReference(usd_path)
+    return child_path
+
+
+def apply_matterport_collision(prim_path: str) -> str:
+    """Apply a basic collider to the imported Matterport prim.
+
+    Returns the path to the Matterport prim.
+    """
+
+    stage = _get_stage()
+    child_path = f"{prim_path}/{MATTERPORT_CHILD_PRIM_NAME}"
+    if not stage.GetPrimAtPath(child_path):
+        raise RuntimeError(f"Matterport prim not found at '{child_path}'. Import USD first.")
+
+    collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+    sim_utils.define_collision_properties(child_path, collider_cfg)
+    return child_path
+
+
+def ensure_hidden_ground_plane(path: str = "/World/GroundPlane") -> None:
+    """Create or update a hidden ground plane that provides collision."""
+
+    from pxr import UsdGeom, Sdf, Gf, Usd
+
+    stage = _get_stage()
+    plane_path = f"{path}/Plane"
+
+    if not stage.GetPrimAtPath(Sdf.Path(path)):
+        UsdGeom.Xform.Define(stage, Sdf.Path(path))
+
+    created = False
+    if not stage.GetPrimAtPath(Sdf.Path(plane_path)):
+        cube = UsdGeom.Cube.Define(stage, Sdf.Path(plane_path))
+        xform = UsdGeom.XformCommonAPI(cube.GetPrim())
+        try:
+            xform.SetScale(Gf.Vec3f(1000.0, 1000.0, 0.1), Usd.TimeCode.Default())
+        except Exception as exc:
+            carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetScale note: {exc}")
+        try:
+            xform.SetTranslate(Gf.Vec3d(0.0, 0.0, -0.05), Usd.TimeCode.Default())
+        except Exception as exc:
+            carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetTranslate note: {exc}")
+        created = True
+    else:
+        cube = UsdGeom.Cube(stage.GetPrimAtPath(Sdf.Path(plane_path)))
+
+    try:
+        UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
+    except Exception:
+        pass
+
+    try:
+        collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+        sim_utils.define_collision_properties(plane_path, collider_cfg)
+    except Exception as exc:
+        carb.log_warn(f"[{EXTENSION_NAME}] Ground plane collision note: {exc}")
+
+    status = "created" if created else "ready"
+    carb.log_info(f"[{EXTENSION_NAME}] Ground plane {status} at {plane_path}")
+
+
+async def import_matterport_asset_async(
+    prim_path: str,
+    input_path: str,
+    *,
+    groundplane: bool = False,
+    manage_simulation: bool = True,
+    resolve_relative_to: Optional[str] = None,
+) -> str:
+    """Programmatic entry-point to import a Matterport USD/OBJ into the stage.
+
+    Returns the prim path of the imported Matterport root.
+    """
+
+    if not input_path:
+        raise ValueError("input_path must be provided")
+
+    resolved_path = input_path
+    if not os.path.isabs(resolved_path) and resolve_relative_to:
+        candidate = os.path.join(resolve_relative_to, resolved_path)
+        if os.path.isfile(candidate):
+            resolved_path = candidate
+
+    sim = None
+    if manage_simulation:
+        if SimulationContext.instance():
+            SimulationContext.clear_instance()
+        sim = SimulationContext(SimulationCfg())
+        await sim.initialize_simulation_context_async()
+
+    if resolved_path.lower().endswith(".usd"):
+        import_matterport_usd_reference(prim_path, resolved_path)
+        if groundplane:
+            ensure_hidden_ground_plane()
+    else:
+        cfg = MatterportImporterCfg(prim_path=prim_path, obj_filepath=resolved_path, groundplane=groundplane)
+        importer = MatterportImporter(cfg)
+        await importer.load_world_async()
+
+    try:
+        apply_matterport_collision(prim_path)
+    except Exception as exc:
+        carb.log_warn(f"[{EXTENSION_NAME}] Matterport collision application note: {exc}")
+
+    if sim:
+        await sim.reset_async()
+        await sim.pause_async()
+
+    return f"{prim_path}/{MATTERPORT_CHILD_PRIM_NAME}"
+
+
+def import_matterport_asset(
+    prim_path: str,
+    input_path: str,
+    *,
+    groundplane: bool = False,
+    manage_simulation: bool = True,
+    resolve_relative_to: Optional[str] = None,
+):
+    """Schedule the asynchronous Matterport import helper via Kit's async engine."""
+
+    return run_coroutine(
+        import_matterport_asset_async(
+            prim_path,
+            input_path,
+            groundplane=groundplane,
+            manage_simulation=manage_simulation,
+            resolve_relative_to=resolve_relative_to,
+        )
+    )
 
 
 def _is_mesh_file(path: str) -> bool:
@@ -295,25 +458,7 @@ class MatterPortExtension(omni.ext.IExt):
         This path avoids any async calls to completely sidestep Kit's
         task stepper re-entrancy.
         """
-        from pxr import Usd, Sdf
-
-        ctx = omni.usd.get_context()
-        stage = ctx.get_stage()
-        if stage is None:
-            raise RuntimeError("No active USD stage")
-
-        # Ensure container prim exists
-        prim_path = self._prim_path
-        if not stage.GetPrimAtPath(prim_path):
-            stage.DefinePrim(Sdf.Path(prim_path), "Xform")
-
-        # Create/ensure child prim and add reference
-        child_path = f"{prim_path}/Matterport"
-        if not stage.GetPrimAtPath(child_path):
-            stage.DefinePrim(Sdf.Path(child_path), "Xform")
-        prim = stage.GetPrimAtPath(child_path)
-        prim.GetReferences().ClearReferences()
-        prim.GetReferences().AddReference(usd_path)
+        import_matterport_usd_reference(self._prim_path, usd_path)
         self._set_status("Reference added to stage")
 
     # ---------------- Physics application (no asyncio) ----------------
@@ -324,27 +469,7 @@ class MatterPortExtension(omni.ext.IExt):
         the USD has already been imported under self._prim_path/Matterport.
         """
         try:
-            ctx = omni.usd.get_context()
-            stage = ctx.get_stage()
-            if stage is None:
-                carb.log_error(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
-                print(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
-                self._set_status("No active USD stage")
-                return
-
-            matterport_prim_path = f"{self._prim_path}/Matterport"
-            if not stage.GetPrimAtPath(matterport_prim_path):
-                carb.log_warn(
-                    f"[{EXTENSION_NAME}] Matterport prim not found at '{matterport_prim_path}'. Import USD first."
-                )
-                print(f"[{EXTENSION_NAME}] Matterport prim not found at '{matterport_prim_path}'. Import USD first.")
-                self._set_status("Matterport prim not found; import first")
-                return
-
-            # Apply a simple collider; do not change visibility or add planes here
-            collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
-            sim_utils.define_collision_properties(matterport_prim_path, collider_cfg)
-
+            matterport_prim_path = apply_matterport_collision(self._prim_path)
             carb.log_info(f"[{EXTENSION_NAME}] Applied collision to {matterport_prim_path}")
             print(f"[{EXTENSION_NAME}] Applied collision to {matterport_prim_path}")
             self._set_status("Collision applied")
@@ -361,59 +486,8 @@ class MatterPortExtension(omni.ext.IExt):
         collision on it. This works in a single frame and avoids re-entrancy.
         """
         try:
-            ctx = omni.usd.get_context()
-            stage = ctx.get_stage()
-            if stage is None:
-                carb.log_error(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
-                print(f"[{EXTENSION_NAME}] No active USD stage; import a USD first.")
-                self._set_status("No active USD stage")
-                return
-
-            from pxr import UsdGeom, Sdf, Gf, Usd
-
-            gp_path = "/World/GroundPlane"
-            plane_path = f"{gp_path}/Plane"
-
-            # Ensure container Xform exists
-            if not stage.GetPrimAtPath(Sdf.Path(gp_path)):
-                UsdGeom.Xform.Define(stage, Sdf.Path(gp_path))
-
-            # Create a large, thin cube as the ground plane (Z-up by default)
-            created = False
-            if not stage.GetPrimAtPath(Sdf.Path(plane_path)):
-                cube = UsdGeom.Cube.Define(stage, Sdf.Path(plane_path))
-                # Use XformCommonAPI on the prim and set xform with correct types
-                xform = UsdGeom.XformCommonAPI(cube.GetPrim())
-                # Scale: wide in X/Y, thin in Z; lift so top sits at z=0
-                try:
-                    xform.SetScale(Gf.Vec3f(1000.0, 1000.0, 0.1), Usd.TimeCode.Default())
-                except Exception as tf1:
-                    carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetScale note: {tf1}")
-                try:
-                    # SetTranslate expects GfVec3d in some builds
-                    xform.SetTranslate(Gf.Vec3d(0.0, 0.0, -0.05), Usd.TimeCode.Default())
-                except Exception as tf2:
-                    carb.log_warn(f"[{EXTENSION_NAME}] Ground plane SetTranslate note: {tf2}")
-                created = True
-            else:
-                cube = UsdGeom.Cube(stage.GetPrimAtPath(Sdf.Path(plane_path)))
-
-            # Make it invisible to keep the scene clean
-            try:
-                UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
-            except Exception:
-                pass
-
-            # Apply collision so it can act as a floor
-            try:
-                collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
-                sim_utils.define_collision_properties(plane_path, collider_cfg)
-            except Exception as coll_exc:
-                carb.log_warn(f"[{EXTENSION_NAME}] Ground plane collision note: {coll_exc}")
-
-            msg = (
-                f"Ground plane {'created' if created else 'ready'} at {plane_path} (hidden/collidable)"
-            )
+            ensure_hidden_ground_plane()
+            msg = "Ground plane ready at /World/GroundPlane/Plane (hidden/collidable)"
             carb.log_info(f"[{EXTENSION_NAME}] {msg}")
             print(f"[{EXTENSION_NAME}] {msg}")
             self._set_status("Ground plane added (hidden)")

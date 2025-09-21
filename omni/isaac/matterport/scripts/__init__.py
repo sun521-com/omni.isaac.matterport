@@ -4,6 +4,16 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from .matterport_ext import MatterPortExtension
+from .matterport_ext import (
+    MatterPortExtension,
+    import_matterport_asset,
+    import_matterport_asset_async,
+    import_matterport_usd_reference,
+)
 
-__all__ = ["MatterPortExtension"]
+__all__ = [
+    "MatterPortExtension",
+    "import_matterport_asset",
+    "import_matterport_asset_async",
+    "import_matterport_usd_reference",
+]
